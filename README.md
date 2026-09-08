@@ -65,7 +65,7 @@ Callers still own, outside this library: single-use nonce consumption, rate limi
 
 ## Before production
 
-1. Populate `KNOWN_CIRCLE_MSCA_IMPLEMENTATIONS` (it ships empty and the deployless path fails closed): run `node scripts/probe-implementation.mjs <deployed-wallet> <rpcUrl>` against a deployed Circle Agent Wallet and add the reported implementation address.
+1. `KNOWN_CIRCLE_MSCA_IMPLEMENTATIONS` currently trusts Circle's `SingleOwnerMSCA` v1.0.0 implementation (`0xD206aC7fEf53d83ED4563E770b28Dba90D0D9eC8`, probed on Base 2026-09-08). If Circle ships a new account version, probe a wallet using it (`node scripts/probe-implementation.mjs <deployed-wallet> <rpcUrl>`) and extend the set — unknown implementations fail closed by design.
 2. Confirm the Circle CLI chain codes in `CIRCLE_CHAIN_CODES` against `circle blockchain list`.
 3. Configure an Arc mainnet RPC before enabling chain 5042.
 4. Run the two Circle signing confirmation probes from the scoping doc (a deployed-chain signature verifying via on-chain 1271, and an undeployed-chain signature verifying via the deployless path).

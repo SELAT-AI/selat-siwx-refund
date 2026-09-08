@@ -198,6 +198,29 @@ describe("verifyRefundClaim — deployless Circle-SCA path", () => {
     expect(result.signerAddress).toBe(getAddress(owner.address));
   });
 
+  it("accepts the probed Circle implementation under the default allowlist", async () => {
+    const owner = privateKeyToAccount(generatePrivateKey());
+    const sca = getAddress("0x2222222222222222222222222222222222222222");
+    const { message, text } = refundMessageFor(sca, 137);
+    const digest = circleMscaReplaySafeDigest({ chainId: 137, wallet: sca, text });
+    const signature = await owner.sign({ hash: digest });
+
+    const result = await verifyRefundClaim({
+      message,
+      signature,
+      expected: expectedFor(sca, 137),
+      clients: mockClients({
+        owner: owner.address,
+        sca,
+        // Circle_SingleOwnerMSCA v1.0.0, probed on Base 2026-09-08.
+        implementation: getAddress("0xD206aC7fEf53d83ED4563E770b28Dba90D0D9eC8"),
+      }),
+      // default allowlist — no knownImplementations override
+    });
+    expect(result.isValid).toBe(true);
+    expect(result.method).toBe("deployless-circle-sca");
+  });
+
   it("rejects a signature bound to a different chain (chain-bound digests)", async () => {
     const owner = privateKeyToAccount(generatePrivateKey());
     const sca = getAddress("0x2222222222222222222222222222222222222222");
@@ -239,7 +262,7 @@ describe("verifyRefundClaim — deployless Circle-SCA path", () => {
     expect(result.reason).toBe("unknown-implementation");
   });
 
-  it("fails closed with the empty default implementation allowlist", async () => {
+  it("fails closed under the default allowlist for an implementation not probed on-chain", async () => {
     const owner = privateKeyToAccount(generatePrivateKey());
     const sca = getAddress("0x2222222222222222222222222222222222222222");
     const { message, text } = refundMessageFor(sca, 137);
@@ -251,7 +274,8 @@ describe("verifyRefundClaim — deployless Circle-SCA path", () => {
       signature,
       expected: expectedFor(sca, 137),
       clients: mockClients({ owner: owner.address, sca }),
-      // no knownImplementations → KNOWN_CIRCLE_MSCA_IMPLEMENTATIONS (empty)
+      // no knownImplementations → KNOWN_CIRCLE_MSCA_IMPLEMENTATIONS; the mock
+      // impl (0x…00aa) is not the probed Circle address, so it must fail closed.
     });
     expect(result.isValid).toBe(false);
     expect(result.reason).toBe("unknown-implementation");

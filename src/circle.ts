@@ -29,15 +29,18 @@ const CIRCLE_MSCA_712_TYPES = {
 /**
  * Known SingleOwnerMSCA implementation addresses the deployless path trusts.
  *
- * INTENTIONALLY EMPTY at build time — populate before enabling the deployless
- * path in production by reading the ERC-1967 slot of a deployed Circle Agent
- * Wallet (scripts/probe-implementation.ts, or scoping doc §7 probes). The
- * digest reconstruction is implementation-specific (a SingleOwnerPlugin
- * variant adds the plugin address to the domain; a Circle v2 account may
- * change layout), so an unknown implementation MUST fail closed rather than
- * risk a wrong-digest comparison.
+ * Populated 2026-09-08 by reading the ERC-1967 slot of two deployed Circle
+ * Agent Wallets on Base (scripts/probe-implementation.mjs) — both identical
+ * 209-byte ERC-1967 proxies pointing at Circle's SingleOwnerMSCA. The digest
+ * reconstruction is implementation-specific (a SingleOwnerPlugin variant adds
+ * the plugin address to the domain; a Circle v2 account may change layout),
+ * so an unknown implementation MUST fail closed rather than risk a
+ * wrong-digest comparison. Extend only via the probe script.
  */
-export const KNOWN_CIRCLE_MSCA_IMPLEMENTATIONS: ReadonlySet<Address> = new Set<Address>([]);
+export const KNOWN_CIRCLE_MSCA_IMPLEMENTATIONS: ReadonlySet<Address> = new Set<Address>([
+  // Circle_SingleOwnerMSCA v1.0.0 (Base mainnet, probed 2026-09-08)
+  "0xD206aC7fEf53d83ED4563E770b28Dba90D0D9eC8",
+]);
 
 const GET_NATIVE_OWNER_ABI = [
   {
