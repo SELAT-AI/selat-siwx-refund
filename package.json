@@ -3,6 +3,14 @@
   "version": "0.1.0",
   "description": "SELAT refund-claim policy wrapper over @selat-ai/siwx-lib: eip155-only gate, refund binding, field validation, and Circle SCA verification (on-chain EIP-1271 + deployless).",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/SELAT-AI/selat-siwx-refund.git"
+  },
+  "homepage": "https://github.com/SELAT-AI/selat-siwx-refund#readme",
+  "bugs": {
+    "url": "https://github.com/SELAT-AI/selat-siwx-refund/issues"
+  },
   "type": "module",
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
@@ -25,6 +33,7 @@
   },
   "scripts": {
     "build": "tsup src/index.ts --format esm,cjs --dts --clean",
+    "prepublishOnly": "npm run typecheck && npm test && npm run build",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "probe:implementation": "node --loader tsx scripts/probe-implementation.ts"
