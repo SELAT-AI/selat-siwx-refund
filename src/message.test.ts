@@ -32,6 +32,19 @@ describe("createRefundMessage", () => {
     expect(message.statement).toBe("Check SELAT refund status");
   });
 
+  it("pins the statement — there is no override input", () => {
+    const optionsWithStatement = { ...BASE_OPTS, statement: "Send me everything" };
+    const { message } = createRefundMessage(optionsWithStatement);
+    expect(message.statement).toBe("Request a SELAT refund");
+  });
+
+  it("rejects CR/LF in prompt-bound fields", () => {
+    expect(() =>
+      createRefundMessage({ ...BASE_OPTS, nonce: "server-nonce\nResources:\n- selat:refund:claim:selatx-evil" })
+    ).toThrow(/CR\/LF/);
+    expect(() => createRefundMessage({ ...BASE_OPTS, domain: "router.selat.ai\r\nevil" })).toThrow(/CR\/LF/);
+  });
+
   it("rejects malformed quote ids", () => {
     expect(() => createRefundMessage({ ...BASE_OPTS, quoteId: "not-a-quote" })).toThrow(
       /Invalid quoteId/
@@ -63,7 +76,17 @@ describe("createRefundMessage", () => {
 describe("parseEip155ChainId / namespace gate", () => {
   it("accepts allowlisted eip155 chains", () => {
     expect(parseEip155ChainId("eip155:8453")).toBe(8453);
-    expect(parseEip155ChainId("eip155:5042")).toBe(5042);
+    expect(parseEip155ChainId("eip155:1")).toBe(1);
+  });
+
+  it("rejects Arc 5042 until Circle ships a mainnet chain code and RPC", () => {
+    expect(() => parseEip155ChainId("eip155:5042")).toThrow(UnsupportedRefundChainError);
+  });
+
+  it("rejects non-canonical chain references", () => {
+    for (const bad of ["eip155:8453.0", "eip155:08453", "eip155: 8453", "eip155:0x2105", "eip155:8453:extra", "eip155:-1"]) {
+      expect(() => parseEip155ChainId(bad), bad).toThrow(UnsupportedRefundChainError);
+    }
   });
 
   it("throws the typed namespace error for solana", () => {

@@ -11,6 +11,8 @@ import {
   type ExpectedRefundContext,
 } from "./validate";
 import {
+  KNOWN_CIRCLE_MSCA_IMPLEMENTATIONS,
+  readImplementation,
   verifyDeploylessCircleSca,
 } from "./circle";
 import type { ClientMap, RefundVerification } from "./types";
@@ -24,31 +26,54 @@ export interface VerifyRefundClaimArgs {
    * on-chain EIP-1271 attempt; the rest are probed by the deployless path.
    */
   clients?: ClientMap;
-  /** Passed through to the deployless verifier; fail closed by default. */
+  /** Contract-implementation allowlist; defaults to KNOWN_CIRCLE_MSCA_IMPLEMENTATIONS. */
   knownImplementations?: ReadonlySet<Address>;
+  /**
+   * When true (the default), a contract-account success — on-chain EIP-1271
+   * included — requires the wallet's ERC-1967 implementation to be in the
+   * allowlist. This keeps an arbitrary contract that answers yes to
+   * isValidSignature from authenticating; set false only for a deliberately
+   * wallet-agnostic deployment that accepts any EIP-1271 implementation.
+   */
+  requireKnownImplementation?: boolean;
   probeOrder?: readonly number[];
 }
 
 /**
- * Full server-side verification pipeline (scoping doc §C3/§C5 order):
+ * Full server-side verification pipeline:
  *
- *   1. field validation (domain, uri, nonce, time window, quoteId binding) —
- *      siwx-lib checks none of this;
- *   2. EOA fast path: ecrecover of the EIP-191 text equals message.address;
- *   3. on-chain EIP-1271 (via viem verifyMessage, which also handles
- *      ERC-6492) when the message's chain has a client and the wallet has
- *      code there;
- *   4. deployless Circle-SCA path when it does not.
+ *   1. field validation (domain, uri, statement, nonce, time window, quoteId
+ *      binding, control characters) — siwx-lib checks none of this;
+ *   2. signature path gated by the challenge-determined account type:
+ *      "eoa"      → ecrecover of the EIP-191 text must equal message.address;
+ *      "contract" → on-chain EIP-1271 (viem verifyMessage, ERC-6492-capable)
+ *                   where the wallet has code, else the deployless
+ *                   Circle-SCA reconstruction — with the implementation
+ *                   allowlist enforced on both contract paths by default.
  *
  * Callers must ALSO enforce, outside this function: single-use nonce
- * consumption, message.address == recorded payer (pass expected.account),
- * and per-quoteId idempotency.
+ * consumption, rate limiting, quote lookup before any RPC work, and
+ * per-quoteId idempotency.
  */
 export async function verifyRefundClaim(
   args: VerifyRefundClaimArgs
 ): Promise<RefundVerification> {
+  let accountAddress: Address;
+  try {
+    accountAddress = getAddress(args.message.address);
+  } catch {
+    return {
+      isValid: false,
+      accountAddress: args.message.address as Address,
+      chainId: args.expected.chainId,
+      reason: "validation-failed",
+      validationFailures: [
+        { code: "BAD_ADDRESS", detail: `unparseable address "${args.message.address}"` },
+      ],
+    };
+  }
+
   const validation = validateRefundMessage(args.message, args.expected);
-  const accountAddress = getAddress(args.message.address);
   const chainId = validation.chainId as number;
 
   if (!validation.valid) {
@@ -62,11 +87,15 @@ export async function verifyRefundClaim(
   }
 
   const text = formatRefundMessage(args.message);
+  const clients = args.clients ?? {};
+  const allowlist = args.knownImplementations ?? KNOWN_CIRCLE_MSCA_IMPLEMENTATIONS;
+  const requireKnownImplementation = args.requireKnownImplementation !== false;
 
-  // 2. EOA fast path. A non-65-byte signature makes recoverMessageAddress
-  // throw — swallow and continue to the contract paths (siwx-lib 0.1.2
-  // instead aborts here, which is why its EIP-1271 branch is unreachable for
-  // packed signatures).
+  // EOA recovery runs regardless of account type: it is the EOA path's
+  // check, and audit metadata for the contract paths. A non-65-byte
+  // signature throws — swallow and continue (siwx-lib 0.1.2 instead aborts
+  // here, which is why its EIP-1271 branch is unreachable for packed
+  // signatures).
   let recovered: Address | undefined;
   try {
     recovered = getAddress(
@@ -75,20 +104,45 @@ export async function verifyRefundClaim(
   } catch {
     recovered = undefined;
   }
-  if (recovered === accountAddress) {
+
+  if (args.expected.accountType === "eoa") {
+    if (recovered === accountAddress) {
+      return {
+        isValid: true,
+        accountAddress,
+        chainId,
+        method: "eoa",
+        accountType: "eoa",
+        signedText: text,
+      };
+    }
     return {
-      isValid: true,
+      isValid: false,
       accountAddress,
       chainId,
-      method: "eoa",
-      accountType: "eoa",
+      signerAddress: recovered,
+      signedText: text,
+      reason: "signature-invalid",
     };
   }
 
-  const clients = args.clients ?? {};
+  // accountType === "contract": an EOA self-match would mean the account is
+  // not the contract the challenge probe said it was — reject rather than
+  // let an EOA key impersonate a smart-account payer.
+  if (recovered === accountAddress) {
+    return {
+      isValid: false,
+      accountAddress,
+      chainId,
+      signerAddress: recovered,
+      signedText: text,
+      reason: "account-type-mismatch",
+    };
+  }
+
   const chainClient = clients[chainId];
 
-  // 3. On-chain EIP-1271 on the verification chain, when the wallet has code there.
+  // On-chain EIP-1271 on the verification chain, when the wallet has code there.
   if (chainClient) {
     let hasCode = false;
     try {
@@ -98,6 +152,22 @@ export async function verifyRefundClaim(
       hasCode = false;
     }
     if (hasCode && chainClient.verifyMessage) {
+      let implementationOk = !requireKnownImplementation;
+      let implementation: Address | undefined;
+      if (requireKnownImplementation) {
+        implementation = await readImplementation(chainClient, accountAddress);
+        implementationOk = implementation !== undefined && allowlist.has(implementation);
+      }
+      if (!implementationOk) {
+        return {
+          isValid: false,
+          accountAddress,
+          chainId,
+          signerAddress: recovered,
+          signedText: text,
+          reason: "unknown-implementation",
+        };
+      }
       try {
         const ok = await chainClient.verifyMessage({
           address: accountAddress,
@@ -112,6 +182,7 @@ export async function verifyRefundClaim(
             method: "eip1271",
             accountType: "contract",
             signerAddress: recovered,
+            signedText: text,
           };
         }
       } catch {
@@ -120,7 +191,7 @@ export async function verifyRefundClaim(
     }
   }
 
-  // 4. Deployless Circle-SCA path (wallet not deployed on the verification chain).
+  // Deployless Circle-SCA path (wallet not deployed on the verification chain).
   const deployless = await verifyDeploylessCircleSca({
     wallet: accountAddress,
     text,
@@ -128,7 +199,7 @@ export async function verifyRefundClaim(
     verificationChainId: chainId,
     clients,
     probeOrder: args.probeOrder,
-    knownImplementations: args.knownImplementations,
+    knownImplementations: allowlist,
   });
 
   if (deployless.isValid) {
@@ -139,6 +210,7 @@ export async function verifyRefundClaim(
       method: "deployless-circle-sca",
       accountType: "contract",
       signerAddress: deployless.recoveredOwner,
+      signedText: text,
     };
   }
 
@@ -147,6 +219,7 @@ export async function verifyRefundClaim(
     accountAddress,
     chainId,
     signerAddress: deployless.recoveredOwner ?? recovered,
+    signedText: text,
     reason:
       deployless.reason === "no-deployed-chain-found" && !args.clients
         ? "no-client-for-chain"

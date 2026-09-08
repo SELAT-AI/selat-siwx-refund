@@ -9,6 +9,7 @@ export {
   REFUND_STATEMENTS,
   circleChainCode,
   defaultRefundUri,
+  hasControlCharacters,
   isAllowedRefundChain,
   isValidQuoteId,
   refundResource,
@@ -45,12 +46,16 @@ export {
   KNOWN_CIRCLE_MSCA_IMPLEMENTATIONS,
   circleMscaReplaySafeDigest,
   findDeployedChain,
+  readImplementation,
   verifyDeploylessCircleSca,
+  verifyPayerLinkage,
 } from "./circle";
 export type {
   DeployedChainInfo,
   DeploylessVerifyArgs,
   DeploylessVerifyResult,
+  PayerLinkageArgs,
+  PayerLinkageResult,
 } from "./circle";
 
 // Shared types

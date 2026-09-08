@@ -46,11 +46,12 @@ const result = await verifyRefundClaim({
     domain: process.env.REFUND_PUBLIC_DOMAIN!, // configured — never from request headers
     quoteId,
     op: "claim",
-    chainId: challenge.chainId,
-    account: transaction.clientAddress,        // recorded payer
+    chainId: challenge.chainId,                // required
+    account: transaction.clientAddress,        // required — the recorded payer
+    uri: challenge.uri,                        // required — exact match, no prefixes
+    accountType: challenge.accountType,        // required — "contract" | "eoa", from the challenge's code probe
   },
   clients,                                     // viem PublicClients by chain id
-  knownImplementations,                        // Circle MSCA implementation allowlist
 });
 
 if (result.isValid) {
@@ -59,7 +60,11 @@ if (result.isValid) {
 }
 ```
 
-The pipeline: field validation → EOA ecrecover → on-chain EIP-1271 (via viem `verifyMessage`, which also handles ERC-6492) where the wallet has code → deployless Circle-SCA reconstruction. Non-65-byte signatures do not abort the pipeline.
+The pipeline: field validation (domain/URI/statement compared exactly, CR/LF rejected everywhere, expiry capped to the issuedAt window, resources must equal exactly the one refund resource) → then the signature path **gated by `accountType`**: `"eoa"` accepts only an ecrecover self-match; `"contract"` accepts only on-chain EIP-1271 (viem `verifyMessage`, ERC-6492-capable) or the deployless Circle-SCA reconstruction — so an EOA key can never stand in for a smart-account payer, or vice versa. Non-65-byte signatures do not abort the pipeline.
+
+Both contract paths enforce the implementation allowlist by default (`requireKnownImplementation: false` is the explicit wallet-agnostic override): an arbitrary contract that answers yes to `isValidSignature` does not authenticate. The statement is pinned per operation and not overridable — `createRefundMessage` has no statement input.
+
+`verifyPayerLinkage({account, expectedOwner, clients})` is the bridge for rows captured before the router recorded the paying account: it proves `getNativeOwner(account) == expectedOwner` on a chain where the account is deployed, failing closed on undeployed accounts and unknown implementations. Use it in the challenge endpoint (validate an asserted payer account against the recorded address) and at claim time for legacy rows.
 
 Callers still own, outside this library: single-use nonce consumption, rate limiting, quote lookup ordering (resolve the quote and check the payer address **before** any RPC-bearing verification), and per-`quoteId` idempotency.
 
@@ -67,7 +72,7 @@ Callers still own, outside this library: single-use nonce consumption, rate limi
 
 1. `KNOWN_CIRCLE_MSCA_IMPLEMENTATIONS` currently trusts Circle's `SingleOwnerMSCA` v1.0.0 implementation (`0xD206aC7fEf53d83ED4563E770b28Dba90D0D9eC8`, probed on Base 2026-09-08). If Circle ships a new account version, probe a wallet using it (`node scripts/probe-implementation.mjs <deployed-wallet> <rpcUrl>`) and extend the set — unknown implementations fail closed by design.
 2. `CIRCLE_CHAIN_CODES` was verified against `circle blockchain list` on 2026-09-08. Arc mainnet has no Circle CLI code yet (only `ARC-TESTNET`), so `circleChainCode(5042)` returns `undefined` — add the mainnet code Circle publishes after the 2026-09-16 launch.
-3. Configure an Arc mainnet RPC before enabling chain 5042.
+3. Arc (5042) is out of the chain allowlist entirely as of 0.2.0 — re-add it to `SELAT_REFUND_CHAIN_IDS` + `VERIFICATION_PROBE_ORDER` + `CIRCLE_CHAIN_CODES` together, once Circle publishes the mainnet chain code and an Arc RPC is configured.
 4. ~~Run the Circle signing confirmation probes~~ — run 2026-09-08:
    - **Deployed chain (Base): fully confirmed.** Circle returns a bare 65-byte signature (no ERC-6492 wrap); on-chain `isValidSignature` accepts it; viem `verifyMessage` (this library's eip1271 path) accepts it; and `circleMscaReplaySafeDigest` reconstruction recovers exactly `getNativeOwner()`.
    - **Undeployed chain: the Circle CLI refuses to sign** ("This wallet isn't deployed on-chain yet"). Consequence: refund challenges must issue a `chainId` where the SCA is deployed (`findDeployedChain` resolves this), where plain EIP-1271 suffices. The deployless verifier stays as defense-in-depth — deployed-chain RPC outage, other wallet vendors, non-CLI signing paths — not as the primary mechanism.

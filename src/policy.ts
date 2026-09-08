@@ -6,13 +6,19 @@
  * here is "what SELAT accepts for refund claims", not "what SIWx supports".
  */
 
-/** Chains SELAT accepts inbound payments on (Circle Gateway ∩ Circle Agent Wallet, mainnet). */
+/**
+ * Chains SELAT accepts inbound payments on (Circle Gateway ∩ Circle Agent Wallet, mainnet).
+ *
+ * Arc (5042) is intentionally ABSENT until Circle publishes an Arc mainnet
+ * CLI chain code and an Arc RPC is configured — with it in the list, a
+ * refund challenge could select a chain the Circle CLI cannot sign for.
+ * Re-add alongside the CIRCLE_CHAIN_CODES entry after the 2026-09-16 launch.
+ */
 export const SELAT_REFUND_CHAIN_IDS: readonly number[] = [
   1, // Ethereum
   10, // OP Mainnet
   130, // Unichain
   137, // Polygon PoS
-  5042, // Arc (mainnet RPC must be configured explicitly; re-verify after 2026-09-16 launch)
   8453, // Base
   42161, // Arbitrum One
   43114, // Avalanche C-Chain
@@ -31,7 +37,7 @@ export function isAllowedRefundChain(chainId: number): boolean {
  * deployed. See the scoping doc, §C1.
  */
 export const VERIFICATION_PROBE_ORDER: readonly number[] = [
-  8453, 1, 42161, 10, 137, 43114, 130, 5042,
+  8453, 1, 42161, 10, 137, 43114, 130,
 ];
 
 /**
@@ -78,6 +84,11 @@ export function refundResource(op: RefundOp, quoteId: string): string {
 
 export function defaultRefundUri(domain: string, op: RefundOp): string {
   return `https://${domain}/wrench/refund/${op}`;
+}
+
+/** Reject CR/LF in any field that lands in the signed prompt (statement spoofing). */
+export function hasControlCharacters(value: string): boolean {
+  return /[\r\n]/.test(value);
 }
 
 /** SELAT quote ids look like `selatx<uuid-ish>`. */

@@ -13,7 +13,7 @@ function goodMessage(overrides: Record<string, unknown> = {}) {
     quoteId: QUOTE,
     op: "claim",
     nonce: "server-nonce-123456",
-    expirationTime: new Date(Date.now() + 5 * 60_000).toISOString(),
+    expirationTime: new Date(Date.now() + 4 * 60_000).toISOString(),
   });
   return { ...message, ...overrides };
 }
@@ -24,6 +24,8 @@ const EXPECTED = {
   op: "claim" as const,
   chainId: 8453,
   account: ACCOUNT,
+  uri: "https://router.selat.ai/wrench/refund/claim",
+  accountType: "eoa" as const,
 };
 
 describe("validateRefundMessage", () => {
@@ -40,12 +42,38 @@ describe("validateRefundMessage", () => {
     expect(result.failures.map((f) => f.code)).toContain("DOMAIN_MISMATCH");
   });
 
-  it("rejects a uri outside the expected origin", () => {
+  it("compares the domain exactly — no case folding", () => {
+    const result = validateRefundMessage(goodMessage({ domain: "Router.Selat.AI" }), EXPECTED);
+    expect(result.failures.map((f) => f.code)).toContain("DOMAIN_MISMATCH");
+  });
+
+  it("rejects a uri that is not exactly the expected uri (prefix match is not enough)", () => {
     const result = validateRefundMessage(
-      goodMessage({ uri: "https://evil.example/wrench/refund/claim" }),
+      goodMessage({ uri: "https://router.selat.ai/wrench/refund/claim/../other" }),
       EXPECTED
     );
     expect(result.failures.map((f) => f.code)).toContain("URI_MISMATCH");
+  });
+
+  it("rejects a tampered statement (wallet-prompt spoof)", () => {
+    const result = validateRefundMessage(
+      goodMessage({ statement: "Sign in to manage your SELAT refund" }),
+      EXPECTED
+    );
+    expect(result.failures.map((f) => f.code)).toContain("STATEMENT_MISMATCH");
+  });
+
+  it("rejects a missing statement", () => {
+    const result = validateRefundMessage(goodMessage({ statement: undefined }), EXPECTED);
+    expect(result.failures.map((f) => f.code)).toContain("STATEMENT_MISMATCH");
+  });
+
+  it("rejects CR/LF smuggled into any signed field", () => {
+    const result = validateRefundMessage(
+      goodMessage({ nonce: "server-nonce-123456\nResources:\n- selat:refund:claim:selatx-other" }),
+      EXPECTED
+    );
+    expect(result.failures.map((f) => f.code)).toContain("CONTROL_CHARACTERS");
   });
 
   it("rejects an expired message (siwx-lib itself verifies these as true)", () => {
@@ -59,6 +87,14 @@ describe("validateRefundMessage", () => {
   it("rejects a missing expiry", () => {
     const result = validateRefundMessage(goodMessage({ expirationTime: undefined }), EXPECTED);
     expect(result.failures.map((f) => f.code)).toContain("MISSING_EXPIRATION");
+  });
+
+  it("rejects a far-future expiry beyond the issuedAt window", () => {
+    const result = validateRefundMessage(
+      goodMessage({ expirationTime: new Date(Date.now() + 365 * 24 * 60 * 60_000).toISOString() }),
+      EXPECTED
+    );
+    expect(result.failures.map((f) => f.code)).toContain("EXPIRY_TOO_FAR");
   });
 
   it("rejects a stale issuedAt outside the replay window", () => {
@@ -81,14 +117,28 @@ describe("validateRefundMessage", () => {
     const result = validateRefundMessage(goodMessage(), {
       ...EXPECTED,
       quoteId: "selatx99999999-0000-0000-0000-000000000000",
+      uri: EXPECTED.uri,
     });
     const codes = result.failures.map((f) => f.code);
     expect(codes).toContain("REQUEST_ID_MISMATCH");
     expect(codes).toContain("RESOURCE_MISMATCH");
   });
 
+  it("rejects extra resources — the list must be exactly the one refund resource", () => {
+    const message = goodMessage();
+    const result = validateRefundMessage(
+      { ...message, resources: [...(message.resources ?? []), "selat:refund:claim:selatx11111111-2222-3333-4444-555555555555"] },
+      EXPECTED
+    );
+    expect(result.failures.map((f) => f.code)).toContain("RESOURCE_MISMATCH");
+  });
+
   it("rejects a claim proof presented for a status operation", () => {
-    const result = validateRefundMessage(goodMessage(), { ...EXPECTED, op: "status" });
+    const result = validateRefundMessage(goodMessage(), {
+      ...EXPECTED,
+      op: "status",
+      uri: "https://router.selat.ai/wrench/refund/status",
+    });
     expect(result.failures.map((f) => f.code)).toContain("RESOURCE_MISMATCH");
   });
 

@@ -12,12 +12,12 @@ export class UnsupportedRefundNamespaceError extends Error {
   }
 }
 
-/** A refund message referenced an eip155 chain outside SELAT's inbound-payment set. */
+/** A refund message referenced an eip155 chain outside SELAT's inbound-payment set, or a non-canonical chain reference. */
 export class UnsupportedRefundChainError extends Error {
   readonly code = "UNSUPPORTED_REFUND_CHAIN";
-  constructor(readonly chainId: number) {
+  constructor(readonly chainRef: number | string) {
     super(
-      `Chain eip155:${chainId} is not in SELAT's refund chain allowlist. ` +
+      `Chain eip155:${chainRef} is not an allowlisted, canonically-formatted SELAT refund chain. ` +
         "This is SELAT deployment policy, not a signature failure."
     );
     this.name = "UnsupportedRefundChainError";
@@ -26,6 +26,7 @@ export class UnsupportedRefundChainError extends Error {
 
 export type RefundValidationCode =
   | "BAD_QUOTE_ID"
+  | "BAD_ADDRESS"
   | "DOMAIN_MISMATCH"
   | "URI_MISMATCH"
   | "ADDRESS_MISMATCH"
@@ -37,9 +38,12 @@ export type RefundValidationCode =
   | "ISSUED_TOO_OLD"
   | "MISSING_EXPIRATION"
   | "EXPIRED"
+  | "EXPIRY_TOO_FAR"
   | "NOT_YET_VALID"
   | "REQUEST_ID_MISMATCH"
-  | "RESOURCE_MISMATCH";
+  | "RESOURCE_MISMATCH"
+  | "STATEMENT_MISMATCH"
+  | "CONTROL_CHARACTERS";
 
 export interface RefundValidationFailure {
   code: RefundValidationCode;
