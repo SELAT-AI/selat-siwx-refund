@@ -5,6 +5,7 @@ import {
   REFUND_STATEMENTS,
   type RefundOp,
   defaultRefundUri,
+  hasControlCharacters,
   isAllowedRefundChain,
   isValidQuoteId,
   refundResource,
@@ -34,7 +35,6 @@ export interface CreateRefundMessageOptions {
   uri?: string;
   issuedAt?: string;
   notBefore?: string;
-  statement?: string;
 }
 
 export interface RefundMessage {
@@ -43,14 +43,25 @@ export interface RefundMessage {
   text: string;
 }
 
-/** Parse `eip155:<n>` strictly; typed errors for anything else. */
+const CANONICAL_EIP155 = /^eip155:([1-9][0-9]*)$/;
+
+/**
+ * Parse `eip155:<n>` strictly and canonically; typed errors for anything else.
+ * Only base-10 digits with no leading zeros are accepted — "eip155:8453.0",
+ * "eip155: 8453", "eip155:0x2105", and extra segments all fail, so a message
+ * can never validate under a chain reference the verifier reads differently.
+ */
 export function parseEip155ChainId(chainId: string): number {
-  const [namespace, reference] = chainId.split(":");
+  const namespace = chainId.split(":")[0];
   if (namespace !== "eip155") {
     throw new UnsupportedRefundNamespaceError(namespace ?? "");
   }
-  const numeric = Number(reference);
-  if (!Number.isInteger(numeric) || !isAllowedRefundChain(numeric)) {
+  const match = CANONICAL_EIP155.exec(chainId);
+  if (!match) {
+    throw new UnsupportedRefundChainError(chainId.slice("eip155:".length));
+  }
+  const numeric = Number(match[1]);
+  if (!Number.isSafeInteger(numeric) || !isAllowedRefundChain(numeric)) {
     throw new UnsupportedRefundChainError(numeric);
   }
   return numeric;
@@ -77,13 +88,30 @@ export function createRefundMessage(options: CreateRefundMessageOptions): Refund
 
   const domain = options.domain ?? DEFAULT_REFUND_DOMAIN;
   const account = getAddress(options.account);
+  const uri = options.uri ?? defaultRefundUri(domain, options.op);
+
+  // Everything below lands verbatim in the signed prompt; CR/LF in any field
+  // could forge extra SIWx lines in what the wallet displays and signs.
+  // The statement is not an input at all — it is pinned per operation.
+  for (const [name, value] of Object.entries({
+    domain,
+    uri,
+    nonce: options.nonce,
+    issuedAt: options.issuedAt ?? "",
+    expirationTime: options.expirationTime,
+    notBefore: options.notBefore ?? "",
+  })) {
+    if (hasControlCharacters(value)) {
+      throw new Error(`Refund message field "${name}" must not contain CR/LF`);
+    }
+  }
 
   const message = SIWx.createMessage({
     domain,
     address: account,
     chainId: `eip155:${options.chainId}`,
-    uri: options.uri ?? defaultRefundUri(domain, options.op),
-    statement: options.statement ?? REFUND_STATEMENTS[options.op],
+    uri,
+    statement: REFUND_STATEMENTS[options.op],
     nonce: options.nonce,
     issuedAt: options.issuedAt,
     expirationTime: options.expirationTime,

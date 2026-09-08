@@ -3,7 +3,9 @@ import { getAddress } from "viem";
 import {
   DEFAULT_CLOCK_SKEW_MS,
   DEFAULT_MAX_ISSUED_AGE_MS,
+  REFUND_STATEMENTS,
   type RefundOp,
+  hasControlCharacters,
   isValidQuoteId,
   refundResource,
 } from "./policy";
@@ -12,18 +14,26 @@ import {
   type RefundValidationFailure,
 } from "./errors";
 import { parseEip155ChainId } from "./message";
+import type { RefundAccountType } from "./types";
 
 export interface ExpectedRefundContext {
-  /** SELAT's own domain, from configuration — NEVER derived from request headers (scoping doc §C4). */
+  /** SELAT's own domain, from configuration — NEVER derived from request headers. Compared exactly. */
   domain: string;
   quoteId: string;
   op: RefundOp;
-  /** Verification chain the challenge was issued for. */
-  chainId?: number;
-  /** The recorded payer account; when given, the message address must match. */
-  account?: string;
-  /** Exact URI check; defaults to prefix check against https://<domain>/. */
-  uri?: string;
+  /** Verification chain the challenge was issued for. Required — no unverified chain choice. */
+  chainId: number;
+  /** The recorded payer account. Required — a claim with no named payer is invalid before any RPC. */
+  account: string;
+  /** Exact URI the message must carry. Required — no prefix matching. */
+  uri: string;
+  /**
+   * Account type as determined by the challenge's deployed-code probe:
+   * "contract" when the payer wallet has code somewhere, "eoa" when it does
+   * not. Verification enforces the matching signature path, so an EOA
+   * self-match can never stand in for a smart account, and vice versa.
+   */
+  accountType: RefundAccountType;
   now?: Date;
   maxIssuedAgeMs?: number;
   clockSkewMs?: number;
@@ -60,43 +70,65 @@ export function validateRefundMessage(
     failures.push({ code: "BAD_QUOTE_ID", detail: expected.quoteId });
   }
 
-  if (message.domain.toLowerCase() !== expected.domain.toLowerCase()) {
+  // CR/LF anywhere in the signed fields can forge extra lines in the prompt
+  // the wallet displayed. Reject before comparing anything else.
+  const textFields: Array<[string, string | undefined]> = [
+    ["domain", message.domain],
+    ["address", message.address],
+    ["statement", message.statement],
+    ["uri", message.uri],
+    ["version", message.version],
+    ["nonce", message.nonce],
+    ["issuedAt", message.issuedAt],
+    ["expirationTime", message.expirationTime],
+    ["notBefore", message.notBefore],
+    ["requestId", message.requestId],
+    ...(message.resources ?? []).map((resource, index): [string, string] => [`resources[${index}]`, resource]),
+  ];
+  for (const [name, value] of textFields) {
+    if (typeof value === "string" && hasControlCharacters(value)) {
+      failures.push({ code: "CONTROL_CHARACTERS", detail: `field "${name}" contains CR/LF` });
+    }
+  }
+
+  // Exact string comparison — no case folding. The challenge told the client
+  // the exact domain to sign; anything else is a different string signed.
+  if (message.domain !== expected.domain) {
     failures.push({
       code: "DOMAIN_MISMATCH",
       detail: `message "${message.domain}" != expected "${expected.domain}"`,
     });
   }
 
-  if (expected.uri) {
-    if (message.uri !== expected.uri) {
-      failures.push({
-        code: "URI_MISMATCH",
-        detail: `message "${message.uri}" != expected "${expected.uri}"`,
-      });
-    }
-  } else if (!message.uri.toLowerCase().startsWith(`https://${expected.domain.toLowerCase()}/`)) {
+  if (message.uri !== expected.uri) {
     failures.push({
       code: "URI_MISMATCH",
-      detail: `message uri "${message.uri}" is not under https://${expected.domain}/`,
+      detail: `message "${message.uri}" != expected "${expected.uri}"`,
     });
   }
 
-  if (expected.account) {
-    let match = false;
-    try {
-      match = getAddress(message.address) === getAddress(expected.account);
-    } catch {
-      match = false;
-    }
-    if (!match) {
-      failures.push({
-        code: "ADDRESS_MISMATCH",
-        detail: `message address ${message.address} != expected payer ${expected.account}`,
-      });
-    }
+  // The statement is pinned per operation and part of the signed semantics.
+  if (message.statement !== REFUND_STATEMENTS[expected.op]) {
+    failures.push({
+      code: "STATEMENT_MISMATCH",
+      detail: `message statement ${JSON.stringify(message.statement ?? null)} != required ${JSON.stringify(REFUND_STATEMENTS[expected.op])}`,
+    });
   }
 
-  if (expected.chainId !== undefined && chainId !== expected.chainId) {
+  let match = false;
+  try {
+    match = getAddress(message.address) === getAddress(expected.account);
+  } catch {
+    match = false;
+  }
+  if (!match) {
+    failures.push({
+      code: "ADDRESS_MISMATCH",
+      detail: `message address ${message.address} != expected payer ${expected.account}`,
+    });
+  }
+
+  if (chainId !== expected.chainId) {
     failures.push({
       code: "CHAIN_MISMATCH",
       detail: `message chain eip155:${chainId} != challenge chain eip155:${expected.chainId}`,
@@ -134,6 +166,13 @@ export function validateRefundMessage(
     const exp = Date.parse(message.expirationTime);
     if (!Number.isFinite(exp) || exp <= now) {
       failures.push({ code: "EXPIRED", detail: message.expirationTime });
+    } else if (Number.isFinite(issuedAt) && exp - issuedAt > maxAge + skew) {
+      // A client-supplied expiry far past the challenge window would keep the
+      // signature attackable long after the challenge died.
+      failures.push({
+        code: "EXPIRY_TOO_FAR",
+        detail: `expirationTime ${message.expirationTime} exceeds issuedAt + ${maxAge}ms window`,
+      });
     }
   }
 
@@ -151,11 +190,14 @@ export function validateRefundMessage(
     });
   }
 
+  // Exactly the one refund resource — a message carrying extra resources is
+  // asserting semantics this flow never issued.
   const wantedResource = refundResource(expected.op, expected.quoteId);
-  if (!message.resources || !message.resources.includes(wantedResource)) {
+  const resources = message.resources ?? [];
+  if (resources.length !== 1 || resources[0] !== wantedResource) {
     failures.push({
       code: "RESOURCE_MISMATCH",
-      detail: `resources ${JSON.stringify(message.resources ?? [])} missing "${wantedResource}"`,
+      detail: `resources ${JSON.stringify(resources)} must equal ["${wantedResource}"]`,
     });
   }
 

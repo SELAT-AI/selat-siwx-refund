@@ -82,6 +82,17 @@ export interface DeployedChainInfo {
   implementation: Address;
 }
 
+/** Read the ERC-1967 implementation address of a deployed proxy, if any. */
+export async function readImplementation(
+  client: EvmReadClient,
+  wallet: Address
+): Promise<Address | undefined> {
+  const slot = await client
+    .getStorageAt({ address: wallet, slot: ERC1967_IMPLEMENTATION_SLOT })
+    .catch(() => undefined);
+  return storageToAddress(slot);
+}
+
 function storageToAddress(word: Hex | null | undefined): Address | undefined {
   if (!word || word === "0x") return undefined;
   const hex = word.replace(/^0x/, "").padStart(64, "0");
@@ -227,5 +238,92 @@ export async function verifyDeploylessCircleSca(
     deployedChainId: deployed.chainId,
     implementation: deployed.implementation,
     reason: isValid ? undefined : "owner-mismatch",
+  };
+}
+
+export interface PayerLinkageArgs {
+  /** The smart account asserted as the payer (e.g. in a refund challenge request). */
+  account: Address;
+  /**
+   * The address the money trail names — for legacy rows, the recorded
+   * `client_address` (the owner EOA the facilitator reported at payment time).
+   */
+  expectedOwner: Address;
+  clients: ClientMap;
+  probeOrder?: readonly number[];
+  knownImplementations?: ReadonlySet<Address>;
+}
+
+export interface PayerLinkageResult {
+  linked: boolean;
+  owner?: Address;
+  deployedChainId?: number;
+  implementation?: Address;
+  reason?: "no-deployed-chain-found" | "unknown-implementation" | "owner-mismatch" | "rpc-error";
+}
+
+/**
+ * Prove that a claimed smart account is backed by a specific owner key:
+ * `getNativeOwner(account)` read on a chain where the account has code must
+ * equal `expectedOwner`. This is the bridge for rows captured before the
+ * router recorded the paying account: the claimant names the SCA, the row
+ * names the owner EOA the facilitator recovered at payment time, and this
+ * check ties them together on-chain. Fails closed on undeployed accounts and
+ * unknown implementations (the getter is Circle SingleOwnerMSCA's, not a
+ * standard — an unknown contract could return whatever it wants).
+ */
+export async function verifyPayerLinkage(args: PayerLinkageArgs): Promise<PayerLinkageResult> {
+  const account = getAddress(args.account);
+  let expectedOwner: Address;
+  try {
+    expectedOwner = getAddress(args.expectedOwner);
+  } catch {
+    return { linked: false, reason: "owner-mismatch" };
+  }
+
+  const deployed = await findDeployedChain({
+    wallet: account,
+    clients: args.clients,
+    probeOrder: args.probeOrder,
+  });
+  if (!deployed) {
+    return { linked: false, reason: "no-deployed-chain-found" };
+  }
+
+  const allowlist = args.knownImplementations ?? KNOWN_CIRCLE_MSCA_IMPLEMENTATIONS;
+  if (!allowlist.has(deployed.implementation)) {
+    return {
+      linked: false,
+      deployedChainId: deployed.chainId,
+      implementation: deployed.implementation,
+      reason: "unknown-implementation",
+    };
+  }
+
+  let owner: Address;
+  try {
+    owner = getAddress(
+      (await deployed.client.readContract({
+        address: account,
+        abi: GET_NATIVE_OWNER_ABI,
+        functionName: "getNativeOwner",
+      })) as string
+    );
+  } catch {
+    return {
+      linked: false,
+      deployedChainId: deployed.chainId,
+      implementation: deployed.implementation,
+      reason: "rpc-error",
+    };
+  }
+
+  const linked = owner === expectedOwner;
+  return {
+    linked,
+    owner,
+    deployedChainId: deployed.chainId,
+    implementation: deployed.implementation,
+    reason: linked ? undefined : "owner-mismatch",
   };
 }

@@ -42,10 +42,17 @@ export interface RefundVerification {
   method?: RefundVerifyMethod;
   accountType?: RefundAccountType;
   signerAddress?: Address;
+  /**
+   * The exact formatted text the signature was checked against. Store this
+   * alongside the claim so the verified bytes survive any future change to
+   * the underlying formatter.
+   */
+  signedText?: string;
   /** Machine-readable reason on failure. */
   reason?:
     | "validation-failed"
     | "signature-invalid"
+    | "account-type-mismatch"
     | "no-client-for-chain"
     | "no-deployed-chain-found"
     | "unknown-implementation"
