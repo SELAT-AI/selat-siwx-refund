@@ -40,16 +40,18 @@ export const VERIFICATION_PROBE_ORDER: readonly number[] = [
  * (replay-safe EIP-712 digest includes chainId), so the code passed here MUST
  * correspond to the verification chain issued in the refund challenge.
  *
- * NOTE: confirm codes against `circle blockchain list` before first release;
- * BASE and MATIC are confirmed in use, the rest follow Circle's documented
- * conventions.
+ * All seven codes verified against `circle blockchain list` on 2026-09-08.
+ * Arc mainnet (eip155:5042) is intentionally ABSENT: the Circle CLI exposes
+ * only ARC-TESTNET (5042002) today, so there is no valid mainnet code to emit
+ * — circleChainCode(5042) returns undefined and callers must treat that as
+ * "cannot sign via Circle for this chain yet". Re-check after the Arc mainnet
+ * launch (2026-09-16) and add the code Circle publishes (expected "ARC").
  */
 export const CIRCLE_CHAIN_CODES: Record<number, string> = {
   1: "ETH",
   10: "OP",
   130: "UNI",
   137: "MATIC",
-  5042: "ARC",
   8453: "BASE",
   42161: "ARB",
   43114: "AVAX",
